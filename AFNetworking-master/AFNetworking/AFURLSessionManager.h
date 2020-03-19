@@ -206,6 +206,8 @@ NS_ASSUME_NONNULL_BEGIN
  
  @param cancelPendingTasks  Whether or not to cancel pending tasks.
  @param resetSession        Whether or not to reset the session of the manager.
+ 
+ //根据传入的参数cancelPendingTasks，判断是否需要取消未完成的任务来使session失效
  */
 - (void)invalidateSessionCancelingTasks:(BOOL)cancelPendingTasks resetSession:(BOOL)resetSession;
 
@@ -305,6 +307,19 @@ NS_ASSUME_NONNULL_BEGIN
  @param downloadProgressBlock A block object to be executed when the download progress is updated. Note this block is called on the session queue, not the main queue.
  @param destination A block object to be executed in order to determine the destination of the downloaded file. This block takes two arguments, the target path & the server response, and returns the desired file URL of the resulting download. The temporary file used during the download will be automatically deleted after being moved to the returned URL.
  @param completionHandler A block to be executed when a task finishes. This block has no return value and takes three arguments: the server response, the path of the downloaded file, and the error describing the network or parsing error that occurred, if any.
+ 断点续传  resumeData
+ 
+ 用户使用断点续传，不仅是客户端的工作，还需要服务器支持断点续传功能，否则无法生成正确的resumeData，如何验证服务器是否支持断点续传呢?
+ 我们可以通过下载文件的时候响应头来查看，根据苹果官方文档(https://developer.apple.com/documentation/foundation/nsurlsessiondownloadtask/1411634-cancelbyproducingresumedata?language=occ)
+ 只有满足一下条件，才能恢复下载：
+ 1.自您第一次请求资源以来，资源没有变化
+ 2.该任务是http或者https的GET请求，必须是get请求
+ 3.服务器在其响应中提供了ETag或者Last-Modified标题（和第一条基本上相同）
+ 4.服务器支持字节范围请求，如：服务器响应头包含 accept-range:Byets
+ 5系统尚未删除临时文件以响应磁盘空间压力，即本地缓存文件存在
+ 满足以上条件才支持断点续传功能
+ 
+ eg：https://www.jianshu.com/p/83fd0fcdf898
  */
 - (NSURLSessionDownloadTask *)downloadTaskWithResumeData:(NSData *)resumeData
                                                 progress:(nullable void (^)(NSProgress *downloadProgress))downloadProgressBlock

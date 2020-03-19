@@ -520,7 +520,7 @@ forHTTPHeaderField:(NSString *)field
 }
 
 #pragma mark - AFURLRequestSerialization
-
+//方法主要添加请求头和处理外界传入的parameters
 - (NSURLRequest *)requestBySerializingRequest:(NSURLRequest *)request
                                withParameters:(id)parameters
                                         error:(NSError *__autoreleasing *)error
@@ -785,7 +785,7 @@ NSTimeInterval const kAFUploadStream3GSuggestedDelay = 0.2;
 @property (readwrite, nonatomic, copy) NSMutableURLRequest *request;
 @property (readwrite, nonatomic, assign) NSStringEncoding stringEncoding;
 @property (readwrite, nonatomic, copy) NSString *boundary;
-//AFMultipartBodyStream是NSInputStream的子类
+//AFMultipartBodyStream是NSInputStream的子类,// 代表了消息体
 @property (readwrite, nonatomic, strong) AFMultipartBodyStream *bodyStream;
 @end
 
@@ -1124,6 +1124,10 @@ NSTimeInterval const kAFUploadStream3GSuggestedDelay = 0.2;
 /**
  // NSInputStream is an abstract class representing the base functionality of a read stream.
  // Subclassers are required to implement these methods.
+ 平时在用NSURLRequest上传文件时,一般是两种方法:
+ 1、一个是设置body、但是如果文件稍大的话,将会撑爆内存。
+ 2、另外一种则是创建一个临时文件、将数据拼接进去、然后将文件路径设置为bodyStream、这样就可以分片的上传了。
+ 这样当我们使用open打开流的时候，就会调用这个方法，我们需要在这个方法中处理我们的逻辑。
  **/
 - (NSInteger)read:(uint8_t *)buffer
         maxLength:(NSUInteger)length
@@ -1136,7 +1140,7 @@ NSTimeInterval const kAFUploadStream3GSuggestedDelay = 0.2;
     NSInteger totalNumberOfBytesRead = 0;
 
     // 一般来说都是直接读取length长度的数据，但是考虑到最后一次需要读出的数据长度(self.numberOfBytesInPacket)一般是小于length
-    // 所以此处使用了MIN(length, self.numberOfBytesInPacket)
+    // 所以此处使用了MIN(length, self.numberOfBytesInPacket), self.numberOfBytesInPacket = NSIntegerMax;
     while ((NSUInteger)totalNumberOfBytesRead < MIN(length, self.numberOfBytesInPacket)) {
         // 类似于我们构建request的逆向过程，我们对于HTTPBodyStream的读取也是分成一个一个AFHTTPBodyPart来的
         // 如果当前AFHTTPBodyPart对象读取完成，那么就使用enumerator读取下一个AFHTTPBodyPart
@@ -1195,6 +1199,26 @@ NSTimeInterval const kAFUploadStream3GSuggestedDelay = 0.2;
     self.streamStatus = NSStreamStatusOpen;
 
     [self setInitialAndFinalBoundaries];
+    /**
+     下面的- (NSInteger)read:(uint8_t *)buffer
+     maxLength:(NSUInteger)length方法会使用到HTTPBodyPartEnumerator，
+     
+     NSArray *_array = @[@1,@2,@3,@5,@6];
+     //通过枚举器来遍历数组
+     NSEnumerator *arrayEnum = [_array objectEnumerator];
+     id object = nil;
+     //枚举器是通过nextobject来获取到对应的对象，如果没有得到对象，则返回nil，while条件不成立，则结束。
+     while (object = [arrayEnum nextObject]) {
+     NSLog(@"%@",object);
+     }
+     
+     获取数组的逆序枚举器(逆序输出)
+     NSEnumerator *reverseArrayEnum = [_array reverseObjectEnumerator];
+     while (object = [reverseArrayEnum nextObject]) {
+     NSLog(@"%@",object);
+     }
+     
+     **/
     self.HTTPBodyPartEnumerator = [self.HTTPBodyParts objectEnumerator];
 }
 
@@ -1304,6 +1328,15 @@ typedef enum {
     }
 }
 
+/**
+ 当读取到 body 部分时要注意，由于 body 是一个 id 类型，外界主要设置的可能值有 NSData、NSURL、NSInputStream 等，AFNetworking 在这里统一将 body 的读取归一化为 inputStream 流方式读取，按照如下规则构建 inputStream
+ 
+ 作者：Yasic
+ 链接：https://www.jianshu.com/p/f27ff0c9b277
+ 来源：简书
+ 著作权归作者所有。商业转载请联系作者获得授权，非商业转载请注明出处。
+ 重写了属性@property (nonatomic, strong) NSInputStream *inputStream;的get方法
+ **/
 - (NSInputStream *)inputStream {
     if (!_inputStream) {
         if ([self.body isKindOfClass:[NSData class]]) {
@@ -1320,6 +1353,7 @@ typedef enum {
     return _inputStream;
 }
 
+//这个方法是根据headers字典来拼接body头,规则：Content-Disposition + : + 空格 + 其他 然后以\r\n结尾，在头部结束部分再拼接一个\r\n
 - (NSString *)stringForHeaders {
     NSMutableString *headerString = [NSMutableString string];
     for (NSString *field in [self.headers allKeys]) {
@@ -1330,23 +1364,27 @@ typedef enum {
     return [NSString stringWithString:headerString];
 }
 
+//重写的contentLength的get方法
 - (unsigned long long)contentLength {
     unsigned long long length = 0;
-
+    // 需要拼接上分割符
     NSData *encapsulationBoundaryData = [([self hasInitialBoundary] ? AFMultipartFormInitialBoundary(self.boundary) : AFMultipartFormEncapsulationBoundary(self.boundary)) dataUsingEncoding:self.stringEncoding];
     length += [encapsulationBoundaryData length];
-
+   // 每个AFHTTPBodyPart对象中还有Content-Disposition等header-使用stringForHeader获取
     NSData *headersData = [[self stringForHeaders] dataUsingEncoding:self.stringEncoding];
     length += [headersData length];
 
+     // 加上每个AFHTTPBodyPart对象具体的数据（比如文件内容）长度
     length += _bodyContentLength;
 
+     // 如果是最后一个AFHTTPBodyPart，还需要加上“--分隔符--”的长度
     NSData *closingBoundaryData = ([self hasFinalBoundary] ? [AFMultipartFormFinalBoundary(self.boundary) dataUsingEncoding:self.stringEncoding] : [NSData data]);
     length += [closingBoundaryData length];
 
     return length;
 }
 
+//重写的属性bytesAvailable的get方法
 - (BOOL)hasBytesAvailable {
     // Allows `read:maxLength:` to be called again if `AFMultipartFormFinalBoundary` doesn't fit into the available buffer
     if (_phase == AFFinalBoundaryPhase) {
@@ -1368,6 +1406,7 @@ typedef enum {
     }
 }
 
+//单个AFHTTPBodyPart的读取方法
 - (NSInteger)read:(uint8_t *)buffer
         maxLength:(NSUInteger)length
 {

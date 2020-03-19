@@ -117,6 +117,13 @@ typedef void (^AFURLSessionTaskCompletionHandler)(NSURLResponse *response, id re
 
 #pragma mark -
 
+
+/***
+ AFURLSessionManagerTaskDelegate
+ 这个代理对象的目的是：
+ 1.处理上传或下载的进度
+ 2.处理获取完数据后的行为
+ **/
 @interface AFURLSessionManagerTaskDelegate : NSObject < NSURLSessionTaskDelegate, NSURLSessionDataDelegate, NSURLSessionDownloadDelegate>
 - (instancetype)initWithTask:(NSURLSessionTask *)task;
 @property (nonatomic, weak) AFURLSessionManager *manager;
@@ -181,6 +188,14 @@ typedef void (^AFURLSessionTaskCompletionHandler)(NSURLResponse *response, id re
                    forKeyPath:NSStringFromSelector(@selector(fractionCompleted))
                       options:NSKeyValueObservingOptionNew
                       context:NULL];
+        /**
+         在写监听方法的时候，这个options使用了NSKeyValueObservingOptionNew，代表什么意思呢？
+         点击去后看到是一个NSKeyValueObservingOptions的枚举：
+         NSKeyValueObservingOptionNew 把更改之前的值提供给处理方法
+         NSKeyValueObservingOptionOld 把更改之后的值提供给处理方法
+         NSKeyValueObservingOptionInitial 把初始化的值提供给处理方法，一旦注册，立马就会调用一次。通常它会带有新值，而不会带有旧值
+         NSKeyValueObservingOptionPrior 分2次调用。在值改变之前和值改变之后
+         **/
     }
     return self;
 }
@@ -207,7 +222,7 @@ typedef void (^AFURLSessionTaskCompletionHandler)(NSURLResponse *response, id re
 //==========================================代理方法start================================================================
 #pragma mark - NSURLSessionTaskDelegate
 
-//完成的代理方法
+//完成的代理方法,AFURLSessionManager里通过delegate对象调用该方法
 - (void)URLSession:(__unused NSURLSession *)session
               task:(NSURLSessionTask *)task
 didCompleteWithError:(NSError *)error
@@ -264,6 +279,7 @@ didCompleteWithError:(NSError *)error
         //自此，请求成功，
         dispatch_async(url_session_manager_processing_queue(), ^{
             NSError *serializationError = nil;
+            //通过manager.responseSerializer解析数据
             responseObject = [manager.responseSerializer responseObjectForResponse:task.response data:data error:&serializationError];
 
             if (self.downloadFileURL) {
@@ -301,7 +317,7 @@ didFinishCollectingMetrics:(NSURLSessionTaskMetrics *)metrics {
 #endif
 
 #pragma mark - NSURLSessionDataDelegate
-
+//AFURLSessionManager里通过delegate对象调用该方法
 - (void)URLSession:(__unused NSURLSession *)session
           dataTask:(__unused NSURLSessionDataTask *)dataTask
     didReceiveData:(NSData *)data
@@ -312,6 +328,7 @@ didFinishCollectingMetrics:(NSURLSessionTaskMetrics *)metrics {
     [self.mutableData appendData:data];
 }
 
+//AFURLSessionManager里通过delegate对象调用该方法
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task
    didSendBodyData:(int64_t)bytesSent
     totalBytesSent:(int64_t)totalBytesSent
@@ -322,7 +339,7 @@ totalBytesExpectedToSend:(int64_t)totalBytesExpectedToSend{
 }
 
 #pragma mark - NSURLSessionDownloadDelegate
-
+//AFURLSessionManager里通过delegate对象调用该方法
 - (void)URLSession:(NSURLSession *)session downloadTask:(NSURLSessionDownloadTask *)downloadTask
       didWriteData:(int64_t)bytesWritten
  totalBytesWritten:(int64_t)totalBytesWritten
@@ -332,6 +349,7 @@ totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite{
     self.downloadProgress.completedUnitCount = totalBytesWritten;
 }
 
+//恢复下载时在AFURLSessionManager里通过delegate对象调用该方法
 - (void)URLSession:(NSURLSession *)session downloadTask:(NSURLSessionDownloadTask *)downloadTask
  didResumeAtOffset:(int64_t)fileOffset
 expectedTotalBytes:(int64_t)expectedTotalBytes{
@@ -340,13 +358,14 @@ expectedTotalBytes:(int64_t)expectedTotalBytes{
     self.downloadProgress.completedUnitCount = fileOffset;
 }
 
+//AFURLSessionManager里通过delegate对象调用该方法
 - (void)URLSession:(NSURLSession *)session
       downloadTask:(NSURLSessionDownloadTask *)downloadTask
 didFinishDownloadingToURL:(NSURL *)location
 {
     self.downloadFileURL = nil;
 
-    //downloadTaskDidFinishDownloading是暴露给外面调用的block，通过该block可以指定一个下载后文件存放的路径
+    //downloadTaskDidFinishDownloading是从AFURLSessionManager传入的的block，通过该block可以指定一个下载后文件存放的路径
     if (self.downloadTaskDidFinishDownloading) {
         self.downloadFileURL = self.downloadTaskDidFinishDownloading(session, downloadTask, location);
         if (self.downloadFileURL) {
@@ -688,6 +707,7 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     delegate.manager = self;
     delegate.completionHandler = completionHandler;
 
+    //destination这个block是从外界传入的
     if (destination) {
         //完成下载的回调
         delegate.downloadTaskDidFinishDownloading = ^NSURL * (NSURLSession * __unused session, NSURLSessionDownloadTask *task, NSURL *location) {
@@ -744,6 +764,7 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     return tasks;
 }
 
+//_cmd在Objective-C的方法中表示当前方法的selector, NSStringFromSelector(_cmd) 与 NSStringFromSelector(@selector(dataTasks))的结果相同，只不过_cmd获取的是当前方法
 - (NSArray *)tasks {
     return [self tasksForKeyPath:NSStringFromSelector(_cmd)];
 }
@@ -772,9 +793,11 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     if (cancelPendingTasks) {
         [self.session invalidateAndCancel];
     } else {
+        //立即return，但是并不会回影响正在执行的任务，它们会继续执行到结束
         [self.session finishTasksAndInvalidate];
     }
     if (resetSession) {
+        //resetSession:表示十分重置session
         self.session = nil;
     }
 }
@@ -903,6 +926,7 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
         uploadTask = [self.session uploadTaskWithRequest:request fromFile:fileURL];
         
         // uploadTask may be nil on iOS7 because uploadTaskWithRequest:fromFile: may return nil despite being documented as nonnull (https://devforums.apple.com/message/926113#926113)
+        //static NSUInteger const AFMaximumNumberOfAttemptsToRecreateBackgroundSessionUploadTask = 3;
         if (!uploadTask && self.attemptsToRecreateUploadTasksForBackgroundSessions && self.session.configuration.identifier) {
             for (NSUInteger attempts = 0; !uploadTask && attempts < AFMaximumNumberOfAttemptsToRecreateBackgroundSessionUploadTask; attempts++) {
                 uploadTask = [self.session uploadTaskWithRequest:request fromFile:fileURL];
@@ -967,7 +991,7 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     return downloadTask;
 }
 
-//下载文件，根据downloadTaskWithResumeData生成request
+//下载文件，根据downloadTaskWithResumeData生成request，
 - (NSURLSessionDownloadTask *)downloadTaskWithResumeData:(NSData *)resumeData
                                                 progress:(void (^)(NSProgress *downloadProgress)) downloadProgressBlock
                                              destination:(NSURL * (^)(NSURL *targetPath, NSURLResponse *response))destination
@@ -1138,6 +1162,7 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
 
 #pragma mark - NSURLSessionTaskDelegate
 
+//重定向
 - (void)URLSession:(NSURLSession *)session
               task:(NSURLSessionTask *)task
 willPerformHTTPRedirection:(NSHTTPURLResponse *)response
@@ -1150,11 +1175,13 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
         redirectRequest = self.taskWillPerformHTTPRedirection(session, task, response, request);
     }
 
+    //如果block为nil，则直接拦截掉302的url地址，防止自动跳转，如果需要重定向到一个新的地址，则可以通过taskWillPerformHTTPRedirection这个block返回一个新的request
     if (completionHandler) {
         completionHandler(redirectRequest);
     }
 }
 
+//证书认证
 - (void)URLSession:(NSURLSession *)session
               task:(NSURLSessionTask *)task
 didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
@@ -1237,8 +1264,13 @@ didCompleteWithError:(NSError *)error
 
     // delegate may be nil when completing a task in the background
     if (delegate) {
+        /**
+         调用delegate的 [delegate URLSession:session task:task didCompleteWithError:error];方法处理数据，
+         然后执行回调
+         **/
         [delegate URLSession:session task:task didCompleteWithError:error];
 
+        //请求完成后移除task的代理
         [self removeDelegateForTask:task];
     }
 
@@ -1266,6 +1298,10 @@ didFinishCollectingMetrics:(NSURLSessionTaskMetrics *)metrics
 
 #pragma mark - NSURLSessionDataDelegate
 
+/**
+ 当接收到服务器的响应（连通了服务器）时会调用
+ NSURLSession在接收到响应的时候要先对响应做允许处理:completionHandler(NSURLSessionResponseAllow);,才会继续接收服务器返回的数据,进入后面的代理方法
+ **/
 - (void)URLSession:(NSURLSession *)session
           dataTask:(NSURLSessionDataTask *)dataTask
 didReceiveResponse:(NSURLResponse *)response
@@ -1282,6 +1318,7 @@ didReceiveResponse:(NSURLResponse *)response
     }
 }
 
+//数据任务已更改为下载任务
 - (void)URLSession:(NSURLSession *)session
           dataTask:(NSURLSessionDataTask *)dataTask
 didBecomeDownloadTask:(NSURLSessionDownloadTask *)downloadTask
@@ -1297,6 +1334,7 @@ didBecomeDownloadTask:(NSURLSessionDownloadTask *)downloadTask
     }
 }
 
+//开始接收到数据
 - (void)URLSession:(NSURLSession *)session
           dataTask:(NSURLSessionDataTask *)dataTask
     didReceiveData:(NSData *)data
@@ -1310,6 +1348,21 @@ didBecomeDownloadTask:(NSURLSessionDownloadTask *)downloadTask
     }
 }
 
+/**
+ 缓存的写入所需的条件比较多
+ 系统默认使用NSURLCache做缓存容器，首先我们可以按需设置NSURLCache的大小，我这里设置了4兆的内存20兆的磁盘空间做缓存。如果不需要缓存那么直接设置空间为0.
+ NSURLCache *URLCache = [[NSURLCache alloc] initWithMemoryCapacity:4 * 1024 * 1024
+ diskCapacity:20 * 1024 * 1024 diskPath:nil];
+ [NSURLCache setSharedURLCache:URLCache];    //设置共享缓存容器
+ 缓存在写入前会调用NSURLSession的willCacheResponse这个代理方法，并且只有将response传给completionHandler()之后系统才会缓存该响应，如果传入nil则表示不缓存该响应。我们可以在这个方法里修改响应信息，然后保存修改之后的响应信息。(不只是GET请求，POST请求也能触发代理方法，保存响应)
+ 响应信息会被缓存下来的先决条件：首先要满足willCacheResponse代理方法的触发条件（如果这个代理方法都不能触发，那么缓存的写入也无从谈起）。然后将需要缓存的响应传给代理方法的completionHandler()进行保存，如果传入nil则表示不缓存。
+ 注意：如果设置共享缓存空间为0，那么也不会缓存响应信息
+ 
+ 作者：简书官方帐号
+ 链接：https://www.jianshu.com/p/45b9e905f84d
+ 来源：简书
+ 著作权归作者所有。商业转载请联系作者获得授权，非商业转载请注明出处。
+ **/
 - (void)URLSession:(NSURLSession *)session
           dataTask:(NSURLSessionDataTask *)dataTask
  willCacheResponse:(NSCachedURLResponse *)proposedResponse
@@ -1327,6 +1380,24 @@ didBecomeDownloadTask:(NSURLSessionDownloadTask *)downloadTask
 }
 
 #if !TARGET_OS_OSX
+/**
+ //在应用处于后台，且后台任务下载完成时执行
+ - (void)application:(UIApplication *)application
+ handleEventsForBackgroundURLSession:(NSString *)identifier
+ completionHandler:(void (^)())completionHandler;
+ 
+ 应用在后台，而且后台所有下载任务完成后，
+ 在所有其他NSURLSession和NSURLSessionDownloadTask委托方法执行完后执行，
+ 可以在该方法中做下载数据管理和UI刷新
+ - (void)URLSessionDidFinishEventsForBackgroundURLSession:(NSURLSession *)session
+ 
+ 注：最好将handleEventsForBackgroundURLSession中completionHandler保存，在该方法中待所有载数据管理和UI刷新做完后，再调用completionHandler()
+ 
+ 作者：HK_Hank
+ 链接：https://www.jianshu.com/p/1211cf99dfc3
+ 来源：简书
+ 著作权归作者所有。商业转载请联系作者获得授权，非商业转载请注明出处。
+ **/
 - (void)URLSessionDidFinishEventsForBackgroundURLSession:(NSURLSession *)session {
     if (self.didFinishEventsForBackgroundURLSession) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -1352,6 +1423,20 @@ didFinishDownloadingToURL:(NSURL *)location
             if (![[NSFileManager defaultManager] moveItemAtURL:location toURL:fileURL error:&error]) {
                 [[NSNotificationCenter defaultCenter] postNotificationName:AFURLSessionDownloadTaskDidFailToMoveFileNotification object:downloadTask userInfo:error.userInfo];
             }
+            
+            /**
+             如果通过设置AFURLSessionManager的downloadTaskDidFinishDownloading这个block给下载文件指定了存放路径，
+             那么在下载完成后会将下载的文件移动到该路径，同时执行了return，不在往下执行
+             if (delegate) {
+             [delegate URLSession:session downloadTask:downloadTask didFinishDownloadingToURL:location];
+             }
+             因为在delegate的 [delegate URLSession:session downloadTask:downloadTask didFinishDownloadingToURL:location];的方法里，也有一个由
+             - (void)addDelegateForDownloadTask:(NSURLSessionDownloadTask *)downloadTask
+             progress:(void (^)(NSProgress *downloadProgress)) downloadProgressBlock
+             destination:(NSURL * (^)(NSURL *targetPath, NSURLResponse *response))destination
+             completionHandler:(void (^)(NSURLResponse *response, NSURL *filePath, NSError *error))completionHandler
+             方法传入的指定文件路径的destination这个block，该block也会将下载文件移动到指定的文件位置，同时发送一个下载完成的通知
+             **/
 
             return;
         }
@@ -1362,6 +1447,14 @@ didFinishDownloadingToURL:(NSURL *)location
     }
 }
 
+/**
+ 之前有一个使用场景，就是视频边下载边播放。要求在视频在下载完之前拿到正在下载的数据。ASI有一个属性能够拿到fileURL，AFNetworking却没有这个属性，现在看来,通过设置
+ 
+ (void)setDownloadTaskDidWriteDataBlock:(nullable void (^)(NSURLSession session, NSURLSessionDownloadTask downloadTask, int64_t bytesWritten, int64_t totalBytesWritten, int64_t totalBytesExpectedToWrite))block;
+ 
+ self.downloadTaskDidWriteData
+ 可以把数据写到一个我们定义的临时的地方
+ **/
 - (void)URLSession:(NSURLSession *)session
       downloadTask:(NSURLSessionDownloadTask *)downloadTask
       didWriteData:(int64_t)bytesWritten
@@ -1380,6 +1473,7 @@ totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite
     }
 }
 
+//在重新启动下载的时候被调用,可以获取到文件的偏移（已经下载的数量），预期的总量
 - (void)URLSession:(NSURLSession *)session
       downloadTask:(NSURLSessionDownloadTask *)downloadTask
  didResumeAtOffset:(int64_t)fileOffset
